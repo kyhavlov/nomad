@@ -23,6 +23,7 @@ import (
 	"github.com/hashicorp/nomad/client/fingerprint"
 	"github.com/hashicorp/nomad/client/rpcproxy"
 	"github.com/hashicorp/nomad/client/stats"
+	"github.com/hashicorp/nomad/client/vaultclient"
 	"github.com/hashicorp/nomad/command/agent/consul"
 	"github.com/hashicorp/nomad/nomad"
 	"github.com/hashicorp/nomad/nomad/structs"
@@ -142,6 +143,9 @@ type Client struct {
 	shutdown     bool
 	shutdownCh   chan struct{}
 	shutdownLock sync.Mutex
+
+	// client to interact with vault for token and secret renewals
+	vaultClient vaultclient.VaultClient
 }
 
 // NewClient is used to create a new client from the given configuration
@@ -207,6 +211,11 @@ func NewClient(cfg *config.Config, consulSyncer *consul.Syncer, logger *log.Logg
 		return nil, fmt.Errorf("failed to create client Consul syncer: %v", err)
 	}
 
+	// Setup the vault client for token and secret renewals
+	if err := c.setupVaultClient(); err != nil {
+		return nil, fmt.Errorf("failed to create vault client: %v", err)
+	}
+
 	// Register and then start heartbeating to the servers.
 	go c.registerAndHeartbeat()
 
@@ -231,6 +240,9 @@ func NewClient(cfg *config.Config, consulSyncer *consul.Syncer, logger *log.Logg
 	// times out and there are no Nomad servers available, this data is
 	// populated by periodically polling Consul, if available.
 	go c.rpcProxy.Run()
+
+	// Start renewing tokens and secrets
+	go c.vaultClient.Start()
 
 	return c, nil
 }
@@ -312,6 +324,9 @@ func (c *Client) Shutdown() error {
 	if c.shutdown {
 		return nil
 	}
+
+	// Stop renewing tokens and secrets
+	c.vaultClient.Stop()
 
 	// Destroy all the running allocations.
 	if c.config.DevMode {
@@ -1217,6 +1232,25 @@ func (c *Client) addAlloc(alloc *structs.Allocation) error {
 	c.allocLock.Lock()
 	c.allocs[alloc.ID] = ar
 	c.allocLock.Unlock()
+	return nil
+}
+
+// setupVaultClient creates an object to periodically renew tokens and secrets
+// with vault.
+func (c *Client) setupVaultClient() error {
+	if c.config.VaultConfig == nil {
+		return fmt.Errorf("nil vaultConfig")
+	}
+	if c.config.VaultConfig.Token == "" {
+		return fmt.Errorf("vault token not set")
+	}
+
+	var err error
+	c.vaultClient, err = vaultclient.NewVaultClient(c.config.VaultConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create vault client: %v", err)
+	}
+
 	return nil
 }
 

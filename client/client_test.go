@@ -85,6 +85,8 @@ func testServer(t *testing.T, cb func(*nomad.Config)) (*nomad.Server, string) {
 
 func testClient(t *testing.T, cb func(c *config.Config)) *Client {
 	conf := config.DefaultConfig()
+	conf.VaultConfig.Token = "testvaulttoken"
+	conf.VaultConfig.TaskTokenTTL = "10s"
 	conf.DevMode = true
 	if cb != nil {
 		cb(conf)
